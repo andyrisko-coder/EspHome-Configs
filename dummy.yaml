@@ -1,0 +1,14 @@
+substitutions:
+  name: "dummy-esphome-project"
+  friendly_name: "Dummy Esphome Project"
+
+esphome:
+  name: "${name}"
+  friendly_name: "${friendly_name}"
+  name_add_mac_suffix: true
+
+esp32:
+  board: esp32-c6-devkitc-1
+  variant: esp32c6
+  framework:
+    type: esp-idf
