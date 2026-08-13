@@ -5,6 +5,8 @@ substitutions:
   wifi_fast_connect: "false"
   # Enable or disable IPv6 networking on the device
   ipv6_enable: "false"
+  # Define a domain for this device to use. i.e. iot.home.lan (so device will appear as athom-smart-plug-v2.iot.home.lan in DNS/DHCP logs)
+  dns_domain: ".local"
 
 esphome:
   name: ${name}
@@ -53,7 +55,8 @@ esp32_improv:
   authorizer: none
 
 dashboard_import:
-  package_import_url: github.com/andyrisko-coder/EspHome-Configs/edit/main/esp32s3v1.yaml
+  package_import_url: github://andyrisko-coder/EspHome-Configs/esp32s3v1.yaml
+
 
 switch:
   - platform: gpio
