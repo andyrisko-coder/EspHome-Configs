@@ -1,0 +1,242 @@
+esp32:
+  variant: esp32s3
+  framework:
+    type: esp-idf
+
+logger:
+
+switch:
+  - platform: gpio
+    name: "led_pwr"
+    id: gpio4_switch
+    pin: GPIO8
+    restore_mode: ALWAYS_ON
+
+light:
+  - platform: esp32_rmt_led_strip
+    name: "LED Strip"
+    id: led_strip
+    pin: GPIO7
+    num_leds: 7
+    rgb_order: GRB
+    chipset: SK6812
+    is_rgbw: true
+    restore_mode: ALWAYS_OFF
+
+    effects:
+      - addressable_lambda:
+          name: "Fire"
+          update_interval: 80ms
+          lambda: |-
+            static uint8_t heat[7];
+
+            for (int i = 0; i < it.size(); i++) {
+              heat[i] = (heat[i] * 3 + esp_random() % 256) / 4;
+
+              uint8_t r;
+              uint8_t g;
+              uint8_t b;
+
+              if (heat[i] < 85) {
+                r = heat[i] * 3;
+                g = heat[i] / 2;
+                b = 0;
+              } else if (heat[i] < 170) {
+                r = 255;
+                g = (heat[i] - 85) * 3;
+                b = 0;
+              } else {
+                r = 255;
+                g = 255;
+                b = (heat[i] - 170) * 2;
+              }
+
+              it[i] = Color(r, g, b);
+            }
+
+globals:
+  - id: stay_awake
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  - id: idle_timer_seconds
+    type: int
+    restore_value: no
+    initial_value: "120"
+
+i2s_audio:
+  - id: mic_bus
+    i2s_lrclk_pin: GPIO2
+    i2s_bclk_pin: GPIO3
+
+microphone:
+  - platform: i2s_audio
+    id: mic
+    i2s_audio_id: mic_bus
+    i2s_din_pin: GPIO1
+    adc_type: external
+    pdm: true
+
+i2c:
+  id: i2c_bus
+  sda: GPIO10
+  scl: GPIO9
+  scan: true
+  frequency: 400kHz
+
+sensor:
+  - platform: veml7700
+    id: veml7700_id
+    i2c_id: i2c_bus
+    address: 0x10
+    update_interval: 1s
+    ambient_light:
+      name: "Ambient Light"
+    full_spectrum:
+      name: "Full Spectrum"
+    infrared:
+      name: "Infrared"
+    actual_gain:
+      name: "Actual Gain"
+    actual_integration_time:
+      name: "Actual Integration Time"
+
+  - platform: max17043
+    id: max17043_id
+    i2c_id: i2c_bus
+    battery_voltage:
+      name: "Battery Voltage"
+    battery_level:
+      name: "Battery"
+    update_interval: 10s
+
+  - platform: template
+    name: "PIR Timer"
+    id: idle_timer_sensor
+    unit_of_measurement: "s"
+    device_class: duration
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return id(idle_timer_seconds);
+
+deep_sleep:
+  id: deep_sleep_1
+
+  wakeup_pin:
+    number: GPIO4
+    allow_other_uses: true
+    mode:
+      input: true
+
+  wakeup_pin_mode: KEEP_AWAKE
+
+binary_sensor:
+  - platform: gpio
+    name: "PIR"
+    id: pir_sensor
+    device_class: motion
+
+    pin:
+      number: GPIO4
+      allow_other_uses: true
+      mode:
+        input: true
+
+    on_press:
+      then:
+        - logger.log: "PIR: motion detected"
+
+        - light.turn_on:
+            id: led_strip
+            red: 20%
+            green: 0%
+            blue: 0%
+            white: 100%
+            brightness: 100%
+
+        - script.execute: idle_timer_start
+
+    on_release:
+      then:
+        - logger.log: "PIR: no motion"
+
+  - platform: gpio
+    name: "Button 1"
+    id: button1
+
+    pin:
+      number: GPIO37
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+
+    on_press:
+      then:
+        - logger.log: "Button 1 pressed"
+
+  - platform: gpio
+    name: "Button 2"
+    id: button2
+
+    pin:
+      number: GPIO36
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+
+    on_press:
+      then:
+        - logger.log: "Button 2 pressed"
+
+  - platform: gpio
+    name: "Switch Status"
+    id: switch_status
+
+    pin:
+      number: GPIO6
+      mode:
+        input: true
+        pulldown: true
+
+script:
+  - id: idle_timer_start
+    mode: restart
+
+    then:
+      - lambda: |-
+          id(idle_timer_seconds) = 120;
+
+      - while:
+          condition:
+            lambda: |-
+              return id(idle_timer_seconds) > 0;
+
+          then:
+            - delay: 1s
+
+            - lambda: |-
+                if (id(idle_timer_seconds) > 0) {
+                  id(idle_timer_seconds)--;
+                }
+
+      - if:
+          condition:
+            lambda: |-
+              return id(idle_timer_seconds) == 0;
+
+          then:
+            - logger.log: "idle timer expired - turning light OFF"
+
+            - light.turn_off: led_strip
+
+            - logger.log: "Entering deep sleep"
+
+            - delay: 500ms
+
+            - deep_sleep.enter:
+                id: deep_sleep_1
