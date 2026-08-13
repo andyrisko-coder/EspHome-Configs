@@ -19,6 +19,16 @@ esp32:
 
 logger:
 
+api:
+  on_client_connected:
+    - logger.log:
+        format: "DEBUG: API client connected"
+        level: DEBUG
+  on_client_disconnected:
+    - logger.log:
+        format: "DEBUG: API client disconnected"
+        level: DEBUG
+
 switch:
   - platform: gpio
     name: "led_pwr"
