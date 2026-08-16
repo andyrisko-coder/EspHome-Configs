@@ -1,27 +1,74 @@
 substitutions:
   name: sl-mzk
   friendly_name: "SL-MZK"
-  # Enables faster network connections, with last connected SSID being connected to and no full scan for SSID being undertaken
   wifi_fast_connect: "false"
-  # Enable or disable IPv6 networking on the device
   ipv6_enable: "false"
-  # Define a domain for this device to use. i.e. iot.home.lan (so device will appear as athom-smart-plug-v2.iot.home.lan in DNS/DHCP logs)
   dns_domain: ".local"
 
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
   name_add_mac_suffix: true
-
   project:
     name: "MZK.SL-MZK"
     version: "1.0.0"
 
+  on_boot:
+    - priority: 800
+      then:
+        - lambda: |-
+            gpio_set_direction(GPIO_NUM_6, GPIO_MODE_INPUT);
+            id(ena_switch_status).publish_state(gpio_get_level(GPIO_NUM_6));
+            gpio_set_direction(GPIO_NUM_6, GPIO_MODE_OUTPUT);
+            gpio_set_level(GPIO_NUM_6, 0);
+            gpio_hold_en(GPIO_NUM_6);
+
+        - lambda: |-
+            esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+            if (cause == ESP_SLEEP_WAKEUP_TIMER)
+              id(wakeup_cause).publish_state("TIMER");
+            else if (cause == ESP_SLEEP_WAKEUP_EXT0)
+              id(wakeup_cause).publish_state("EXT0 / GPIO");
+            else if (cause == ESP_SLEEP_WAKEUP_EXT1)
+              id(wakeup_cause).publish_state("EXT1 / GPIO");
+            else if (cause == ESP_SLEEP_WAKEUP_GPIO)
+              id(wakeup_cause).publish_state("GPIO");
+            else if (cause == ESP_SLEEP_WAKEUP_UNDEFINED)
+              id(wakeup_cause).publish_state("POWER ON / RESET");
+            else {
+              char buffer[32];
+              snprintf(buffer, sizeof(buffer), "UNKNOWN (%d)", cause);
+              id(wakeup_cause).publish_state(buffer);
+            }
+
+    - priority: -100
+      then:
+        - lambda: |-
+            if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER) {
+              auto call = id(led_strip).make_call();
+              if (id(saved_light_state)) {
+                call.set_state(true);
+                call.set_brightness(id(saved_brightness));
+                call.set_rgb(id(saved_red), id(saved_green), id(saved_blue));
+                call.set_white(id(saved_white));
+                call.perform();
+                ESP_LOGD(
+                  "LIGHT",
+                  "Restored light: brightness=%.2f RGB=(%.2f, %.2f, %.2f) W=%.2f",
+                  id(saved_brightness),
+                  id(saved_red),
+                  id(saved_green),
+                  id(saved_blue),
+                  id(saved_white)
+                );
+              }
+            }
 
 esp32:
   variant: esp32s3
   framework:
     type: esp-idf
+  #cpu_frequency: 80MHz
 
 logger:
 
@@ -42,11 +89,8 @@ network:
   enable_ipv6: ${ipv6_enable}
 
 wifi:
-  # This spawns an AP with the device name and mac address with no password.
   ap: {}
-  # Allow rapid re-connection to previously connect WiFi SSID, skipping scan of all SSID
   fast_connect: "${wifi_fast_connect}"
-  # Define dns domain / suffix to add to hostname
   domain: "${dns_domain}"
 
 captive_portal:
@@ -56,14 +100,6 @@ esp32_improv:
 
 dashboard_import:
   package_import_url: github://andyrisko-coder/EspHome-Configs/esp32s3v1.yaml
-
-
-switch:
-  - platform: gpio
-    name: "led_pwr"
-    id: gpio4_switch
-    pin: GPIO8
-    restore_mode: ALWAYS_ON
 
 light:
   - platform: esp32_rmt_led_strip
@@ -75,61 +111,119 @@ light:
     chipset: SK6812
     is_rgbw: true
     restore_mode: ALWAYS_OFF
-
     effects:
-      - addressable_lambda:
-          name: "Fire"
-          update_interval: 80ms
-          lambda: |-
-            static uint8_t heat[7];
-
-            for (int i = 0; i < it.size(); i++) {
-              heat[i] = (heat[i] * 3 + esp_random() % 256) / 4;
-
-              uint8_t r;
-              uint8_t g;
-              uint8_t b;
-
-              if (heat[i] < 85) {
-                r = heat[i] * 3;
-                g = heat[i] / 2;
-                b = 0;
-              } else if (heat[i] < 170) {
-                r = 255;
-                g = (heat[i] - 85) * 3;
-                b = 0;
-              } else {
-                r = 255;
-                g = 255;
-                b = (heat[i] - 170) * 2;
-              }
-
-              it[i] = Color(r, g, b);
-            }
+      - addressable_rainbow:
+          name: "rainbow"
+          speed: 10
+          width: 50
 
 globals:
-  - id: stay_awake
+  - id: switch_status_pin
     type: bool
     restore_value: no
     initial_value: "false"
 
-  - id: idle_timer_seconds
-    type: int
+  - id: inactivity_seconds
+    type: uint32_t
     restore_value: no
-    initial_value: "120"
+    initial_value: "0"
 
-i2s_audio:
-  - id: mic_bus
-    i2s_lrclk_pin: GPIO2
-    i2s_bclk_pin: GPIO3
+  - id: saved_light_state
+    type: bool
+    restore_value: yes
+    initial_value: "false"
 
-microphone:
-  - platform: i2s_audio
-    id: mic
-    i2s_audio_id: mic_bus
-    i2s_din_pin: GPIO1
-    adc_type: external
-    pdm: true
+  - id: saved_brightness
+    type: float
+    restore_value: yes
+    initial_value: "1.0"
+
+  - id: saved_red
+    type: float
+    restore_value: yes
+    initial_value: "1.0"
+
+  - id: saved_green
+    type: float
+    restore_value: yes
+    initial_value: "1.0"
+
+  - id: saved_blue
+    type: float
+    restore_value: yes
+    initial_value: "1.0"
+
+  - id: saved_white
+    type: float
+    restore_value: yes
+    initial_value: "1.0"
+
+number:
+  - platform: template
+    id: sleep_timeout
+    name: "Sleep Timeout"
+    icon: "mdi:sleep"
+    optimistic: true
+    restore_value: true
+    min_value: 10
+    max_value: 120
+    step: 1
+    unit_of_measurement: "s"
+    mode: slider
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (id(pir_sensor).state)
+            id(inactivity_seconds) = 0;
+          else if (id(inactivity_seconds) < 4294967295UL)
+            id(inactivity_seconds)++;
+
+      - if:
+          condition:
+            lambda: |-
+              return id(inactivity_seconds) >= id(sleep_timeout).state;
+          then:
+            - logger.log: "Idle timer expired - turning light OFF"
+            - lambda: |-
+                id(saved_light_state) = id(led_strip).current_values.is_on();
+                id(saved_brightness) = id(led_strip).current_values.get_brightness();
+                id(saved_red) = id(led_strip).current_values.get_red();
+                id(saved_green) = id(led_strip).current_values.get_green();
+                id(saved_blue) = id(led_strip).current_values.get_blue();
+                id(saved_white) = id(led_strip).current_values.get_white();
+            - logger.log: "Entering deep sleep"
+            - delay: 300ms
+            - deep_sleep.enter:
+                id: deep_sleep_component
+
+output:
+  - platform: gpio
+    id: switch_status_output
+    pin: GPIO6
+
+switch:
+  - platform: template
+    name: "Force Deep Sleep"
+    id: force_deep_sleep
+    icon: "mdi:sleep"
+    optimistic: true
+    turn_on_action:
+      - logger.log: "FORCE DEEP SLEEP requested"
+      - delay: 500ms
+      - light.turn_off: led_strip
+      - switch.turn_off: gpio8_switch
+      - logger.log: "Entering deep sleep NOW"
+      - delay: 200ms
+      - deep_sleep.enter:
+          id: deep_sleep_component
+
+  - platform: gpio
+    name: "led_pwr"
+    id: gpio8_switch
+    pin: GPIO8
+    restore_mode: ALWAYS_ON
 
 i2c:
   id: i2c_bus
@@ -138,12 +232,29 @@ i2c:
   scan: true
   frequency: 400kHz
 
+text_sensor:
+  - platform: template
+    id: wakeup_cause
+    name: "Wakeup Cause"
+    icon: "mdi:power-cycle"
+    update_interval: never
+
 sensor:
+  - platform: template
+    id: inactivity_counter
+    name: "Inactivity Counter"
+    unit_of_measurement: "s"
+    device_class: duration
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: return id(inactivity_seconds);
+
   - platform: veml7700
     id: veml7700_id
     i2c_id: i2c_bus
     address: 0x10
-    update_interval: 1s
+    update_interval: 10s
     ambient_light:
       name: "Ambient Light"
     full_spectrum:
@@ -164,132 +275,56 @@ sensor:
       name: "Battery"
     update_interval: 10s
 
-  - platform: template
-    name: "PIR Timer"
-    id: idle_timer_sensor
-    unit_of_measurement: "s"
-    device_class: duration
-    state_class: measurement
-    accuracy_decimals: 0
-    update_interval: 1s
-    lambda: |-
-      return id(idle_timer_seconds);
-
 deep_sleep:
-  id: deep_sleep_1
-
-  wakeup_pin:
-    number: GPIO4
-    allow_other_uses: true
-    mode:
-      input: true
-
-  wakeup_pin_mode: KEEP_AWAKE
+  id: deep_sleep_component
+  sleep_duration: 2min
+  esp32_ext1_wakeup:
+    pins:
+      - number: 4
+        allow_other_uses: true
+      - number: 21
+    mode: ANY_HIGH
 
 binary_sensor:
+  - platform: template
+    name: "ENA Status"
+    id: ena_switch_status
+
   - platform: gpio
     name: "PIR"
     id: pir_sensor
     device_class: motion
-
     pin:
       number: GPIO4
       allow_other_uses: true
       mode:
         input: true
-
     on_press:
-      then:
-        - logger.log: "PIR: motion detected"
-
-        - light.turn_on:
-            id: led_strip
-            red: 20%
-            green: 0%
-            blue: 0%
-            white: 100%
-            brightness: 100%
-
-        - script.execute: idle_timer_start
-
+      - logger.log: "PIR: motion detected"
+      - lambda: id(inactivity_counter) = 0;
     on_release:
-      then:
-        - logger.log: "PIR: no motion"
+      - logger.log: "PIR: no motion"
 
   - platform: gpio
     name: "Button 1"
     id: button1
-
     pin:
       number: GPIO37
       mode:
         input: true
         pullup: true
       inverted: true
-
     on_press:
-      then:
-        - logger.log: "Button 1 pressed"
+      - logger.log: "Button 1 pressed"
 
   - platform: gpio
     name: "Button 2"
     id: button2
-
     pin:
       number: GPIO36
       mode:
         input: true
         pullup: true
       inverted: true
-
     on_press:
-      then:
-        - logger.log: "Button 2 pressed"
-
-  - platform: gpio
-    name: "Switch Status"
-    id: switch_status
-
-    pin:
-      number: GPIO6
-      mode:
-        input: true
-        pulldown: true
-
-script:
-  - id: idle_timer_start
-    mode: restart
-
-    then:
-      - lambda: |-
-          id(idle_timer_seconds) = 120;
-
-      - while:
-          condition:
-            lambda: |-
-              return id(idle_timer_seconds) > 0;
-
-          then:
-            - delay: 1s
-
-            - lambda: |-
-                if (id(idle_timer_seconds) > 0) {
-                  id(idle_timer_seconds)--;
-                }
-
-      - if:
-          condition:
-            lambda: |-
-              return id(idle_timer_seconds) == 0;
-
-          then:
-            - logger.log: "idle timer expired - turning light OFF"
-
-            - light.turn_off: led_strip
-
-            - logger.log: "Entering deep sleep"
-
-            - delay: 500ms
-
-            - deep_sleep.enter:
-                id: deep_sleep_1
+      - logger.log: "Button 2 pressed"
